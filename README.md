@@ -40,12 +40,12 @@ pip install openai-whisper
 project/
 │
 ├── folder-video-atas/
-│   ├── video1.mp4
-│   ├── video2.mp4
+│   ├── atas_1.mp4
+│   ├── atas_2.mp4
 │
 ├── folder-video-bawah/
-│   ├── video1.mp4
-│   ├── video2.mp4
+│   ├── bawah_1.mp4
+│   ├── bawah_2.mp4
 │
 ├── folder-output/
 │
