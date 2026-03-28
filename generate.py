@@ -2,6 +2,8 @@ import os
 import random
 import subprocess
 import whisper
+import numpy as np
+import wave
 
 # ======================
 # CONFIG
@@ -53,7 +55,6 @@ def clean_text(text):
     text = text.replace(" ", "\\ ")
     return text
 
-# 🔥 SPLIT JADI 2 BARIS (TANPA \n)
 def split_text(text, max_chars=40):
     words = text.strip().split()
 
@@ -70,7 +71,7 @@ def split_text(text, max_chars=40):
     if current:
         lines.append(current)
 
-    return lines[:2]  # maksimal 2 baris
+    return lines[:2]
 
 # ======================
 # AUDIO EXTRACTION
@@ -93,6 +94,63 @@ def extract_audio(video_path):
     return audio_path
 
 # ======================
+# 🔥 DETEKSI SUARA
+# ======================
+def is_speech(audio_path, start, end, threshold=500):
+    with wave.open(audio_path, 'rb') as wf:
+        framerate = wf.getframerate()
+        start_frame = int(start * framerate)
+        end_frame = int(end * framerate)
+
+        wf.setpos(start_frame)
+        frames = wf.readframes(end_frame - start_frame)
+
+        audio = np.frombuffer(frames, dtype=np.int16)
+
+        if len(audio) == 0:
+            return False
+
+        volume = np.abs(audio).mean()
+        return volume > threshold
+
+# ======================
+# 🔥 CARI AWAL SUARA MANUSIA
+# ======================
+def get_first_speech_time(audio_path, step=0.2, threshold=700, min_hits=3):
+    import wave
+    import numpy as np
+
+    with wave.open(audio_path, 'rb') as wf:
+        framerate = wf.getframerate()
+        total_frames = wf.getnframes()
+
+        chunk_size = int(step * framerate)
+
+        hit_count = 0
+
+        for i in range(0, total_frames, chunk_size):
+            wf.setpos(i)
+            frames = wf.readframes(chunk_size)
+
+            audio = np.frombuffer(frames, dtype=np.int16)
+
+            if len(audio) == 0:
+                continue
+
+            volume = np.abs(audio).mean()
+
+            if volume > threshold:
+                hit_count += 1
+
+                # 🔥 harus kena beberapa kali (bukan noise sekali)
+                if hit_count >= min_hits:
+                    return round(i / framerate, 2)
+            else:
+                hit_count = 0
+
+    return 0
+
+# ======================
 # SUBTITLE (WHISPER)
 # ======================
 def generate_subtitle(video_path):
@@ -100,16 +158,37 @@ def generate_subtitle(video_path):
 
     audio_path = extract_audio(video_path)
 
+    # 🔥 DETEKSI AWAL SUARA
+    first_speech = get_first_speech_time(audio_path)
+    print("🎤 First speech at:", first_speech)
+
     model = whisper.load_model("base")
     result = model.transcribe(audio_path)
 
     subtitles = []
-    for seg in result["segments"]:
-        raw_lines = split_text(seg["text"])
-        clean_lines = [clean_text(line) for line in raw_lines]
 
+    for seg in result["segments"]:
         start = round(seg["start"], 2)
         end = round(seg["end"], 2)
+
+        # 🔥 FIX UTAMA: paksa subtitle pertama tidak sebelum suara
+        if start < first_speech:
+            start = first_speech
+
+        # 🔥 skip kalau setelah dipaksa jadi aneh
+        if end <= start:
+            continue
+
+        # 🔥 FILTER noise
+        if not is_speech(audio_path, start, end):
+            continue
+
+        # 🔥 OPTIONAL DELAY (biar natural)
+        start = round(start + 0.2, 2)
+        end = round(end + 0.2, 2)
+
+        raw_lines = split_text(seg["text"])
+        clean_lines = [clean_text(line) for line in raw_lines]
 
         if clean_lines:
             subtitles.append({
@@ -122,14 +201,13 @@ def generate_subtitle(video_path):
     return subtitles
 
 # ======================
-# BUILD FILTER (FIX UTAMA)
+# BUILD FILTER
 # ======================
 def build_subtitle_filter(subs):
     filters = []
 
     for s in subs:
         for i, line in enumerate(s["lines"]):
-            # 🔥 posisi tengah (2 baris seimbang)
             if len(s["lines"]) == 1:
                 y_pos = "(h-text_h)/2"
             else:
@@ -138,12 +216,14 @@ def build_subtitle_filter(subs):
             filters.append(
                 f"drawtext=text='{line}':"
                 f"fontcolor=white:"
-                f"fontsize=42:"
-                f"borderw=3:bordercolor=black:"
-                f"shadowcolor=black:shadowx=2:shadowy=2:"
-                f"box=1:boxcolor=black@0.4:"
+                f"fontsize=48:"
+                f"fontfile=/Windows/Fonts/arialbd.ttf:"
+                f"borderw=4:bordercolor=black:"
+                f"shadowcolor=black:shadowx=3:shadowy=3:"
+                f"box=1:boxcolor=black@0.5:boxborderw=10:"
                 f"x=(w-text_w)/2:"
                 f"y={y_pos}:"
+                f"alpha='if(lt(t,{s['start']}),0, if(lt(t,{s['start']}+0.2),(t-{s['start']})/0.2,1))':"
                 f"enable=between(t\\,{s['start']}\\,{s['end']})"
             )
 
